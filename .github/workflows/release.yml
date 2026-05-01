@@ -1,0 +1,91 @@
+name: Release
+
+# Publishes @githosted/sdk to npm on tag push.
+#
+# Source-of-truth note: the canonical source for this SDK lives
+# in the githosted monorepo under sdk/typescript/. The .github/
+# workflows/ directory you're reading this file in is mirrored
+# from sdk/typescript/.github/workflows/ in that monorepo. Edits
+# made directly in this repo are overwritten on the next mirror
+# sync — change the monorepo copy instead.
+#
+# Authentication
+# --------------
+# Uses npm's OIDC trusted publishing (--provenance + id-token).
+# One-time npm setup:
+#   1. Create the `githosted` org on npm and link this repo as
+#      a trusted publisher under the package settings, OR
+#   2. Set NPM_TOKEN as a repo secret with publish scope on the
+#      `@githosted/sdk` package and uncomment the `NODE_AUTH_TOKEN`
+#      line below. Trusted publishing is preferred — no token to
+#      rotate, signed provenance attestation appears on npm.
+#
+# Trigger:
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required for npm provenance attestations.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@githosted/sdk
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          # Trusted publishing requires npm CLI ≥ 11.5.1. Node
+          # 22.x bundles npm 10.x, which silently falls back to
+          # the placeholder _authToken in .npmrc and the registry
+          # rejects the PUT with a misleading 404. Node 24 ships
+          # npm 11.12+ — keeps OIDC working without an explicit
+          # `npm i -g npm@latest` step.
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Verify package version matches tag
+        run: |
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$pkg_version" != "$tag_version" ]; then
+              echo "::error::package.json version ($pkg_version) does not match tag ($tag_version). Bump package.json first."
+              exit 1
+            fi
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Publish
+        # Trusted publishing — npm authenticates against the
+        # workflow's OIDC token (configured under
+        # https://www.npmjs.com/package/@githosted/sdk/access →
+        # Trusted Publishers). --provenance signs the publish
+        # with the same token; npm renders a "Provenance" badge
+        # on the package page.
+        #
+        # If trusted publishing ever needs to be replaced with a
+        # token (org migration, etc.), re-add:
+        #   env:
+        #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # …and create a granular bypass-2FA token. Trusted
+        # publishing is the supported long-term path.
+        run: npm publish --access public --provenance
